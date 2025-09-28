@@ -6,6 +6,15 @@ This repository provides an **unofficial implementation** of the paper [**VideoG
 
 ---
 
+## 📌 Important Notes on Implementation Differences
+This implementation **deviates from the original paper** in several aspects due to complexity, resource constraints, or design choices:
+- **Temporal Attention module** (as described in the paper) is **not implemented** in this version.
+- The **Flow-guided Propagation** mechanism is borrowed from **BasicVSR++**, rather than the proposed in VideoGigaGAN.
+- Other architectural components (e.g., generator backbone, discriminator design) follow the general spirit of the paper but may use simplified or alternative modules for practicality.
+
+As such, **this code should be considered an approximation** of the original method, intended for research exploration and educational purposes.
+
+
 ## 📦 Environment Setup
 
 We recommend using `mamba` to manage dependencies for a fast and reliable installation.
@@ -55,7 +64,7 @@ You may modify data paths, hyperparameters, model architecture, etc., directly i
 ├── environment.yaml       # Environment dependencies
 ├── train.py               # Training entry script
 ├── models/                # Model definitions (GigaGAN architecture, etc.)
-├── loss/                  # The loss functions definitions
+├── losses/                # Loss functions definitions
 ├── ckpt/                  # The checkpoint relied upon by the model
 └── README.md
 ```
