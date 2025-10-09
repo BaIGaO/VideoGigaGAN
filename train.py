@@ -4,6 +4,7 @@
 # It includes a mock dataset, model and optimizer initialization, and a training loop
 # that alternates between training the discriminator and the generator.
 
+
 import torch
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
@@ -13,6 +14,9 @@ from pathlib import Path
 from PIL import Image
 import random
 import time
+
+# Import AMP utilities
+from torch.cuda.amp import GradScaler, autocast # Added for AMP
 
 # Import from our custom modules
 from models import VideoGigaGAN_Generator, VideoDiscriminator
@@ -26,7 +30,7 @@ class Config:
 
     # Training
     NUM_EPOCHS = 100
-    BATCH_SIZE = 2
+    BATCH_SIZE = 1
     NUM_FRAMES = 4 # Number of frames per video clip
     LR_G = 5e-5
     LR_D = 5e-5
@@ -101,6 +105,9 @@ def main():
     criterion_char = CharbonnierLoss().to(device)
     criterion_lpips = LPIPSLoss(net='alex').to(device).eval()
 
+    # --- Initialize GradScaler for AMP ---
+    scaler = GradScaler() # Added for AMP
+
     total_steps = 0
     for epoch in range(cfg.NUM_EPOCHS):
         for i, (lr_video, hr_video) in enumerate(dataloader):
@@ -110,47 +117,62 @@ def main():
             lr_video = lr_video.to(device)
             hr_video = hr_video.to(device)
     
-            # Train Discriminator
+            # --- Train Discriminator with AMP ---
             net_d.train()
             optimizer_d.zero_grad()
-            with torch.no_grad():
+            
+            with torch.no_grad(): # No AMP needed here as no gradients are computed
                 fake_hr_video = net_g(lr_video)
             
             hr_video.requires_grad = True
-            real_pred = net_d(hr_video)
-            loss_d_real = criterion_gan(real_pred, True, is_disc=True)
-            fake_pred = net_d(fake_hr_video.detach())
-            loss_d_fake = criterion_gan(fake_pred, False, is_disc=True)
-            loss_d = (loss_d_real + loss_d_fake) / 2
+            # Use autocast for the forward pass of the discriminator
+            with autocast(): # Added for AMP
+                real_pred = net_d(hr_video)
+                loss_d_real = criterion_gan(real_pred, True, is_disc=True)
+                fake_pred = net_d(fake_hr_video.detach())
+                loss_d_fake = criterion_gan(fake_pred, False, is_disc=True)
+                loss_d = (loss_d_real + loss_d_fake) / 2
+                
+                # Apply R1 Regularization periodically
+                if total_steps % cfg.R1_REG_FREQUENCY == 0:
+                    loss_r1 = r1_regularization(real_pred, hr_video)
+                    loss_d += cfg.MU_R1 * loss_r1
+                else:
+                    loss_r1 = torch.tensor(0.0)
+
+            # Scale the loss and call backward
+            scaler.scale(loss_d).backward() # Modified for AMP
+            # Step the optimizer using the scaled gradients
+            scaler.step(optimizer_d) # Modified for AMP
+            # Update the scaler for next iteration
+            scaler.update() # Modified for AMP
             
-            # Apply R1 Regularization periodically
-            if total_steps % cfg.R1_REG_FREQUENCY == 0:
-                loss_r1 = r1_regularization(real_pred, hr_video)
-                loss_d += cfg.MU_R1 * loss_r1
-            else:
-                loss_r1 = torch.tensor(0.0)
-    
-            loss_d.backward()
-            optimizer_d.step()
-            
-            # Train Generator
+            # --- Train Generator with AMP ---
             net_g.train()
             optimizer_g.zero_grad()
-            fake_hr_video = net_g(lr_video)
-            fake_pred_g = net_d(fake_hr_video)
-            loss_g_adv = criterion_gan(fake_pred_g, True, is_disc=False)
             
-            n, t, c, h, w = fake_hr_video.shape
-            # 使用-1来自动推断维度大小
-            fake_hr_video_reshaped = fake_hr_video.view(-1, c, h, w)
-            hr_video_reshaped = hr_video.view(-1, c, h, w)
-    
-            loss_g_char = criterion_char(fake_hr_video_reshaped, hr_video_reshaped)
-            loss_g_lpips = criterion_lpips(fake_hr_video_reshaped, hr_video_reshaped)
-            
-            loss_g = cfg.MU_GAN * loss_g_adv + cfg.MU_CHAR * loss_g_char + cfg.MU_LPIPS * loss_g_lpips
-            loss_g.backward()
-            optimizer_g.step()
+            # Use autocast for the forward pass of the generator and discriminator
+            with autocast(): # Added for AMP
+                fake_hr_video = net_g(lr_video)
+                fake_pred_g = net_d(fake_hr_video)
+                loss_g_adv = criterion_gan(fake_pred_g, True, is_disc=False)
+                
+                n, t, c, h, w = fake_hr_video.shape
+                # 使用-1来自动推断维度大小
+                fake_hr_video_reshaped = fake_hr_video.view(-1, c, h, w)
+                hr_video_reshaped = hr_video.view(-1, c, h, w)
+        
+                loss_g_char = criterion_char(fake_hr_video_reshaped, hr_video_reshaped)
+                loss_g_lpips = criterion_lpips(fake_hr_video_reshaped, hr_video_reshaped)
+                
+                loss_g = cfg.MU_GAN * loss_g_adv + cfg.MU_CHAR * loss_g_char + cfg.MU_LPIPS * loss_g_lpips
+
+            # Scale the loss and call backward
+            scaler.scale(loss_g).backward() # Modified for AMP
+            # Step the optimizer using the scaled gradients
+            scaler.step(optimizer_g) # Modified for AMP
+            # Update the scaler for next iteration
+            scaler.update() # Modified for AMP
     
             if total_steps % cfg.LOG_INTERVAL == 0:
                 elapsed = time.time() - start_time
@@ -169,3 +191,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
