@@ -12,6 +12,7 @@ from mmcv.ops import ModulatedDeformConv2d  # 使用 ModulatedDeformConv2d（DCN
 from collections import OrderedDict
 
 
+
 def flow_warp(x, flow, interpolation='bilinear', padding_mode='zeros', align_corners=True):
     """Warp an image or feature map with optical flow.
     Args:
@@ -202,34 +203,19 @@ class SPyNetBasicModule(nn.Module):
         return self.basic_module(tensor_input)
 
 class SelfAttention(nn.Module):
-    def __init__(self, in_channel, n_head=1, norm_groups=32):
+    def __init__(self, in_channel, norm_groups=32):
         super().__init__()
-
-        self.n_head = n_head
-
         self.norm = nn.GroupNorm(norm_groups, in_channel)
-        self.qkv = nn.Conv2d(in_channel, in_channel * 3, 1, bias=False)
-        self.out = nn.Conv2d(in_channel, in_channel, 1)
+        # Simple 3x3 conv to capture local context, mimicking attention's role
+        self.conv = nn.Conv2d(in_channel, in_channel, kernel_size=3, padding=1)
+        self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
 
     def forward(self, input):
-        batch, channel, height, width = input.shape
-        n_head = self.n_head
-        head_dim = channel // n_head
-
+        # Normalize input
         norm = self.norm(input)
-        qkv = self.qkv(norm).view(batch, n_head, head_dim * 3, height, width)
-        query, key, value = qkv.chunk(3, dim=2)  # bhdyx
-
-        attn = torch.einsum(
-            "bnchw, bncyx -> bnhwyx", query, key
-        ).contiguous() / math.sqrt(channel)
-        attn = attn.view(batch, n_head, height, width, -1)
-        attn = torch.softmax(attn, -1)
-        attn = attn.view(batch, n_head, height, width, height, width)
-
-        out = torch.einsum("bnhwyx, bncyx -> bnchw", attn, value).contiguous()
-        out = self.out(out.view(batch, channel, height, width))
-
+        # Apply lightweight transformation
+        out = self.lrelu(self.conv(norm))
+        # Residual connection
         return out + input
 
 class ResidualBlock(nn.Module):
@@ -598,8 +584,13 @@ class VideoDiscriminator(nn.Module):
         out = self.final_conv(x)
         return out
 if __name__ == "__main__":    
-    model = VideoGigaGAN_Generator(spynet_pretrained='../ckpt/spynet_20210409-c6c1bd09.pth',scale=4) 
-    input_video = torch.randn(2, 10, 3, 64, 64)  # (B, T, 3, H, W)
-    output = model(input_video)  
-    #torch.save(model, "model.pth")
+    from torch.cuda.amp import GradScaler, autocast
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = VideoGigaGAN_Generator(spynet_pretrained='../ckpt/spynet_20210409-c6c1bd09.pth',scale=2).to(device) 
+
+    with autocast():
+        model.eval()
+        input_video = torch.randn(2, 4, 3, 240, 240).to(device)  # (B, T, 3, H, W)
+        output = model(input_video)  
+        torch.save(model, "model.pth")
     print(output.shape)
