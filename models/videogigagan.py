@@ -61,8 +61,21 @@ class SPyNet(nn.Module):
         self.basic_module = nn.ModuleList(
             [SPyNetBasicModule() for _ in range(6)])
 
-        if isinstance(pretrained, str):           
-            self.basic_module.load_state_dict(torch.load(pretrained),strict=False)            
+        if isinstance(pretrained, str): 
+            pretrained_dict = torch.load(pretrained)         
+            new_state_dict = OrderedDict()
+
+            for k, v in pretrained_dict.items():                
+                if 'basic_module' in k:
+                    parts = k.split('.')                    
+                    module_idx = parts[1]                 
+                    conv_idx_in_basic = int(parts[3])
+                    conv_idx_in_seq = conv_idx_in_basic * 2                    
+                    param_type = parts[5]                 
+                    new_key = f"{module_idx}.basic_module.{conv_idx_in_seq}.{param_type}"                    
+                    new_state_dict[new_key] = v
+
+            self.basic_module.load_state_dict(new_state_dict, strict=True)       
         elif pretrained is not None:
             raise TypeError('[pretrained] should be str or None, '
                             f'but got {type(pretrained)}.')
